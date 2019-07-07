@@ -10,6 +10,8 @@ require(dplyr)
 # ./bin/docker-image-tool.sh -m -t sparklyr build
 
 spark_disconnect_all()
+showConnections()
+closeAllConnections()
 
 cip<-system2("kubectl",args="cluster-info",stdout = T)[1]
 pattern<-"https://((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?):[0-9]+"
@@ -42,7 +44,7 @@ df<- sc %>%
   invoke("read") %>%
   invoke("format","xml") %>%
   invoke("option","rowTag","jtis_speedmap") %>%
-  invoke("load","/checkpoint/20190225-0043.xml")
+  invoke("load","/checkpoint/*")
 
 sdf<-sdf_register(df,"trafficSPD")
 head(sdf)
