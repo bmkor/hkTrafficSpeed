@@ -375,7 +375,6 @@ c(a,aa) %>% mapview()
 c(n,st_cast(st_difference(a, st_buffer(n, dist=1e-3)),"LINESTRING")) %>% 
   mapview()
 st_buffer(n, dist=10) %>% mapview()
-?st_snap
 
 tol<-0.1
 units(tol)<-"m"
