@@ -3,22 +3,157 @@ library(sf)
 library(mapview)
 library(dplyr)
 library(nngeo)
-
-install.packages("devtools")
-devtools::install_github("hypertidy/silicate", force=T)
+library(dodgr)
+# install.packages("devtools")
+# devtools::install_github("hypertidy/silicate", force=T)
 
 
 ### Extract all highway
 ### st_bbox(c(xmin=113.80,ymin=22.350,xmax= 114.2,ymax=22.5))
 ### covers TM routes
+tmbbox<-st_bbox(c(xmin=113.80,
+                  ymin=22.350,
+                  xmax= 114.2,
+                  ymax=22.5))
 
 hk <- opq('China') %>%
   add_osm_feature(key='highway', 
-                  bbox = st_bbox(c(xmin=113.80,
-                                   ymin=22.350,
-                                   xmax= 114.2,
-                                   ymax=22.5))) %>%
+                  bbox = tmbbox) %>%
   osmdata_sf()
+
+
+### we only concern highway
+r<-hk$osm_lines %>%
+  dplyr::filter(hk$osm_lines$highway %in% 
+                  c("motorway", "secondary", "primary", "junction", "trunk_link", "primary_link",
+                    "tertiary", "trunk", "bridge", "track", "road", "motorway_link"))
+
+
+### get TM points
+roads<-getTDRoads()
+tmroads<-roads %>%
+  subset(district == "TM")
+  
+tm<-tmroads %>%
+  st_as_sfc() %>%
+  st_cast("POINT")
+
+tmroads<-tmroads %>%
+  st_as_sfc()
+
+#### find nearest neighbouring line
+tmp<-st_nn(tm, r)
+rr<-r[unlist(tmp),]
+
+rr %>%
+  mapview() + tm
+
+which(rownames(rr) %in% c("1797.1","3317.1","1657.1", "360.1", "367.1"))
+
+r[unlist(tmp),]$osm_id %in% dtm$way_id
+
+#### c("1797.1","3317.1","1657.1", "360.1", "367.1")
+#### c("158584319", "302867489", "157811060", "47071904", "47072173")
+#### cleansing
+
+rr %>% 
+  filter(!osm_id %in% c("158584319", "302867489", "157811060",
+                        "47071904","47072173")) %>%
+  mapview() + mapview(tmroads,color="red") + tm
+
+
+r[unlist(tmp)]
+
+unlist(tmp)[1:5]
+
+
+tid<-unique(r[unlist(tmp)[1:5],]$osm_id)
+
+frid<-dtm[which(dtm$way_id == tid[1]),]$from_id
+toid<-dtm[which(dtm$way_id == tid[2]),]$to_id[4]
+
+rpath<-dodgr_paths(dtm,from=frid,to=toid)
+
+dtm[which(dtm$way_id == "32663665"),]$to_id[3]
+dtm[which(dtm$way_id == "47072186"),]$from_id
+
+rrpath<-dodgr_paths(dtm,
+                    from=dtm[which(dtm$way_id == "32663665"),]$to_id[3],
+                    to=dtm[which(dtm$way_id == "47072186"),]$from_id)
+
+
+
+r[unlist(tmp)[which(unlist(tmp) == "2984" )],] %>% 
+   mapview() + tm[1:5] + rr + mapview(r[which(r$osm_id %in% dtm[which(dtm$from_id %in% rpath[[1]][[1]]),]$way_id),],color="red") +
+  mapview(r[which(r$osm_id %in% dtm[which(dtm$from_id %in% rrpath[[1]][[1]]),]$way_id),], color = "orange")
+
+
+### use dodgr
+m<-matrix(tmbbox,nrow=2)
+colnames(m) <- c("min","max")
+rownames(m) <- c("x","y")
+dtm<-dodgr_streetnet(m,expand=0) %>%
+  weight_streetnet(wt_profile = "motorcar")
+
+
+rr[which(rr$osm_id == "112284897"),] %>%
+  mapview()
+
+class(dtm)
+
+sg<-dtm[which(dtm$way_id == "112284897"),]
+
+rbind(as.matrix(sg[,c("from_lon","from_lat")]), 
+      as.matrix(sg[nrow(sg),c("to_lon","to_lat")]))%>%
+  st_multipoint() %>%
+  st_sfc() %>%
+  st_set_crs(4326) %>%
+  mapview() + rr
+  
+
+
+
+
+dodgr_contract_graph(sg)
+
+
+
+rr[nrow(rr),]$osm_id
+sapply(unique(rr$osm_id),function(id){
+  which(dtm$way_id == id)
+})
+
+unique(rr$osm_id) %in% dtm$way_id
+
+all(sapply(unique(rr$osm_id), function(id) {
+  id %in% dtmw$way_id
+}))
+
+dtmw[unlist(sapply(unique(rr$osm_id), function(id){
+  which(dtmw$way_id == id)
+})),]
+
+
+
+weighting_profiles$weighting_profiles$name
+
+unique(dtmw$highway)
+
+rr$osm_id %in% dtmw$way_id
+
+ttr<-r[1,] %>%
+  st_transform(2326)
+
+st_buffer(ttr,5) %>%
+  mapview() + ttr$geometry 
+
+st_buffer(ttr,0.1) %>%
+  st_contains(ttr)
+
+r %>%
+  mapview() + tm
+
+
 
 
 
@@ -299,13 +434,6 @@ tt$osm_lines %>%
 
 #available_features()
 
-r<-subset(hk$osm_lines,!is.na(hk$osm_lines$highway)) %>%
-  subset(highway %in% 
-           c("motorway", "secondary", "primary", "junction", "trunk_link", "primary_link",
-                        "tertiary", "trunk", "bridge", "track", "road", "motorway_link"))
-
-r %>% 
-  mapview()
 
 # r %>%
 #   mapview()
@@ -317,11 +445,6 @@ r %>%
 # rr %>% 
 #   mapview()
 
-### get TM points
-roads<-getTDRoads()
-tm<-subset(roads, district == "TM") %>%
-  st_as_sfc() %>%
-  st_cast("POINT")
 
 #### plot
 c(r$geometry, tm) %>%
