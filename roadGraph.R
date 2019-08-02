@@ -35,13 +35,14 @@ getTDRoadsInSF<-function(specURL="http://static.data.gov.hk/td/traffic-speed-map
 
 rds<-getTDRoadsInSF()
 
-### Cleansing: we assume the route A-B gives start = A and end = B. Let's check
+#### Cleansing: we assume the route A-B gives start = A and end = B. Let's check####
 which(sapply(1:dim(rds)[1],function(i){
   !all(unlist(strsplit(rds[i,]$route,"-")) == c(rds[i,]$start,rds[i,]$end))
 })) 
 # if all good, the above should be empty.
 # row 93 got problems
 
+#### correct typos ####
 rds[93,] #7881 or 7891?
 rds[which(rds$start == "7881"),] # seems typo in the start of route 7891-789
 rds[93,]$start <- "7891"
@@ -53,36 +54,240 @@ rds[93,]$start <- "7891"
 ################################################################################################
 
 ### break all pts
-allpts<-rds %>%
-  select(start,end) %>%
-  st_drop_geometry() %>%
-  apply(1,function(r){
-    rbind(r[1],r[2])
-  }) %>%
-  as.vector() %>%
-  data.frame(id=. ,stringsAsFactors = F, geom = rds$geom %>%
-               st_cast('POINT'))  %>% 
-  st_as_sf()
-
+getAllpts<-function(rds){
+  rds %>%
+    select(start,end) %>%
+    st_drop_geometry() %>%
+    apply(1,function(r){
+      rbind(r[1],r[2])
+    }) %>%
+    as.vector() %>%
+    data.frame(id=. ,stringsAsFactors = F, geom = rds$geom %>%
+                 st_cast('POINT'))  %>% 
+    st_as_sf()
+}
 ### take out those without any intersections or id appears once only
-roots<-allpts %>%
-  group_by(id) %>%
-  tally() %>%
-  filter(n == 1) %>%
-  select(id, geometry)
+getRoots<-function(apts){
+  apts %>%
+    group_by(id) %>%
+    tally() %>%
+    filter(n == 1) %>%
+    select(id, geometry)  
+}
 
-st_equals(roots,sparse =F) # should be an identity matrix
+#### get pts and roots ####
+apts<-getAllpts(rds)
+roots<-getRoots(apts)
+#### end ####
 
-### routes with roots are assumed to be correct (i.e. correct geomtry)
+
+# should be an identity matrix
+all(st_equals(roots,sparse =F)  == diag(1,nrow=nrow(roots),ncol=nrow(roots),names = T))
+
+
+#### routes with roots are assumed to be correct (i.e. correct geomtry) ####
 rds<-rds %>% 
   mutate(is_pivot = F, route_change = F, checked = F) %>%
   select(route:route_type,is_pivot, route_change, checked, geom) %>%
   mutate(is_pivot = ifelse((start %in% roots$id | end %in% roots$id), T, F))
-  
-### 46332-3692 
 
+#### check all filtered start-end routes are correct
+rds %>%
+  filter(is_pivot) %>%
+  mapview(legend=F)  + vrds %>%
+  mapview(legend=F)
+
+
+
+rrds<-rds %>%
+  filter(is_pivot) %>%
+  group_by(route) %>%
+  group_split() %>%
+  lapply(function(r){
+    if(r$route != paste(r$start,r$end,sep='-')){
+      r
+    }
+  }) %>% 
+  do.call(rbind,.) 
+
+
+
+rvrds<-allpts %>%
+  st_touches(.,rrds,sparse =F) %>%
+  which(.,arr.ind = T) %>%
+  apply(1,function(r){
+    allpts[r[1],]
+  }) %>%
+  do.call(rbind,.)
+
+crds<-rds %>%
+  filter(!is_pivot) %>%
+  st_touches(rrds,sparse = F)  %>%
+  which(.,arr.ind = T) %>%
+  apply(1,function(r){
+    rr<-rds %>%
+      filter(!is_pivot)
+    rr[r[1],]
+  }) %>%
+  do.call(rbind,.)
+
+cvrds<-allpts %>%
+  st_touches(.,crds,sparse =F)%>%
+  which(.,arr.ind = T) %>%
+  apply(1,function(r){
+    allpts[r[1],]
+  }) %>%
+  do.call(rbind,.)
+
+
+cvrds<-crds %>%
+  select(start,end) %>%
+  st_drop_geometry() %>%
+  as.matrix(byrow=F) %>%
+  t(.) %>%
+  as.vector() %>%
+  data.frame(id=. ,stringsAsFactors = F, geom = crds %>%
+               st_geometry() %>%
+               st_cast('POINT'))  %>% 
+  st_as_sf()
+
+rrds %>%
+  mapview(legend=F) + rvrds + crds + cvrds %>%
+  mapview(legend=F)
+
+
+
+
+rds[c(5,16,21),]
+
+rds[5,]$route == paste(rds[5,]$start,rds[5,]$end,sep='-')
+
+
+rds %>%
+  filter(is_pivot) %>%
+  dim()
+
+
+
+vrds<-allpts %>%
+  st_touches(.,rds %>% 
+               filter(is_pivot), sparse = F) %>%
+  which(.,arr.ind = T) %>%
+  apply(1,function(r){
+    allpts[r[1],]
+  }) %>%
+  do.call(rbind,.)
+
+
+
+
+
+
+o<-st_equals(roots,apts,sparse=F)
+o<-roots$id[which(apply(o,1,sum) > 1)] ### should be empty
+o #"46522"  "991039" "991098"
+
+
+### we assume the swap is correct
+rds<-rds %>% 
+  filter(start %in% o | end %in% o) %>%
+  group_by(route) %>%
+  group_split() %>%
+  lapply(function(tmp){
+    tmp %>% mutate(start=tmp$end,
+                   end=tmp$start,
+                   route_change=T)
+  }) %>%
+  do.call(rbind,.) %>%
+  rbind(rds %>% 
+          filter(!start %in% o & !end %in% o))
+
+#### check route ####
+# apts2<-getAllpts(rds)
+# roots2<-getRoots(apts2)
+# o2<-st_equals(roots2,apts2,sparse=F)
+# roots$id[which(apply(o2,1,sum) > 1)] ### it is empty now
+# rm(apts)
+# rm(roots2)
+# rm(o2)
+
+#### corrections ####
+
+apts<-apts %>% 
+  filter(id == "50079") %>%
+  slice(2) %>%
+  rbind(., apts %>% filter(id != "50079")) 
+
+
+apts<-apts %>% 
+  filter(id == "910") %>%
+  slice(2) %>%
+  rbind(., apts %>% filter(id != "910")) 
+
+rds<-rds %>%
+  mutate(route=ifelse(route == "4649-46497","4649p-46497",route),
+         start=ifelse(route == "4649p-46497", "4649p", start )) %>%
+  mutate(route=ifelse(route == "46495-4649","46495-4649p",route),
+         end=ifelse(route == "46495-4649p", "4649p", end)) %>%
+  mutate(route=ifelse(route == "877-46498","877p-46498",route),
+         start=ifelse(route == "877p-46498", "877p", start )) %>%
+  mutate(route=ifelse(route == "793-877","793-877p",route),
+         end=ifelse(route == "793-877p", "877p", end)) %>%
+  mutate(route=ifelse(route == "793-7918","793p-7918",route),
+         start=ifelse(route == "793p-7918", "793p", start )) %>%
+  mutate(route=ifelse(route == "877-793","877-793p",route),
+         end=ifelse(route == "877-793p", "793p", end)) %>%
+  mutate(route=ifelse(route == "910-931","910-931p",route),
+         end=ifelse(route == "910-931p", "931p", end))%>%
+  mutate(geom=ifelse(route=="50079-50076", 
+                     apts %>% 
+                       filter(id == "50079") %>% 
+                       distinct() %>%
+                       st_coordinates() %>%
+                       rbind(.,apts %>% 
+                               filter(id == "50076") %>% 
+                               distinct() %>% 
+                               st_coordinates()) %>%
+                       as.matrix() %>% st_linestring() %>%
+                       st_geometry() %>%
+                       st_set_crs(2326), geom)) %>%
+  mutate(geom=ifelse(route=="50078-50079", 
+                     apts %>% 
+                       filter(id == "50078") %>% 
+                       distinct() %>%
+                       st_coordinates() %>%
+                       rbind(.,apts %>% 
+                               filter(id == "50079") %>% 
+                               distinct() %>% 
+                               st_coordinates()) %>%
+                       as.matrix() %>% st_linestring() %>%
+                       st_geometry() %>%
+                       st_set_crs(2326), geom)) %>%
+  mutate(geom=ifelse(route=="910-931p", 
+                     apts %>% 
+                       filter(id == "910") %>%
+                       distinct() %>%
+                       st_coordinates() %>%
+                       rbind(.,apts %>% 
+                               filter(id == "931") %>% 
+                               slice(1) %>%
+                               st_coordinates()) %>%
+                       as.matrix() %>% st_linestring() %>%
+                       st_geometry() %>%
+                       st_set_crs(2326), geom)) %>%
+  filter(!route %in% c("4649-46497","46495-4649",
+                       "877-46498","793-877",
+                       "793-7918", "877-793",
+                       "910-931")) %>%
+  st_set_crs(2326)
+
+#### end of corrections ####
+
+### 46332-3692 
+### "888301-3692"
+### rou<-"3692-46332" 
+### rou<-"46332-46522"
 checkRoute<-function(routes){
-  # routes<-r
   rdstmp <- routes %>%
     filter(!checked)
   if (nrow(rdstmp) == 0){
@@ -90,14 +295,14 @@ checkRoute<-function(routes){
   } else {
     rds_p<-rdstmp %>% 
       filter(is_pivot)
-    
     rds_n<-rdstmp %>% 
       filter(!is_pivot)
-    
     rds_r<-rds_p %>%
-      st_intersects(rds_n,sparse=F) %>%
+      st_touches(.,rds_n,sparse=F) %>%
       which(., arr.ind = T) %>%
       apply(1,function(r){
+        # r<-c(12,73)
+        rds_n[r[2],]
         pp<-rds_p[r[1],]
         pp<-data.frame(id=c(pp$start,pp$end),
                        stringsAsFactors = F) %>%
@@ -120,22 +325,17 @@ checkRoute<-function(routes){
             
             if (nrow(rc) > 0){
               if(ttmp$id[rc[1,1]] != pp$id[rc[1,2]]){
-                print("a")
-                print(ttmp$id[rc[1,1]])
-                print(pp$id[rc[1,2]])
-                print("b")
                 tmp %>%
                   mutate(start=tmp$end,
                          end=tmp$start,
-                         is_pivot = T, 
+                         is_pivot = T,
                          route_change = T)
               } else {
                 tmp %>%
                   mutate(is_pivot = T)
               }
             } else {
-              tmp %>%
-                mutate(is_pivot = T)
+              tmp
             }
           }) %>%
           do.call(rbind,.)
@@ -160,8 +360,12 @@ r<-rds
 while(!all(r$checked)){
   r<<-checkRoute(r)  
 }
+r %>%
+  filter(route_change & district == "TM") %>%
+  mapview()
 
-# checkRoute(r)
+
+#### checkRoute(r) ####
 
 rr<-r %>%
   group_by(route) %>%
@@ -169,7 +373,8 @@ rr<-r %>%
   lapply(function(ro){
     if(ro$route_change){
       ro %>%
-        mutate(route = paste(rev(unlist(strsplit(route,'-'))),collapse = '-'))
+        mutate(route = paste(rev(unlist(strsplit(route,'-'))),collapse = '-'),
+               route_change = F)
     } else{
       ro
     }
@@ -188,16 +393,11 @@ allpts<-allpts[sapply(unique(allpts$id),function(id){
   which(id==allpts$id)[1]
 }),]
 
-allpts %>% filter(id == "30069")
-r %>% 
-  filter(start == "30069" | end == "30069")
-  # filter(start == "888301")
 
 chk<-rr %>%
   group_by(route) %>%
   group_split() %>%
   lapply(function(ro){
-    ro<-rr[3,]
     pt1<-allpts %>%
       filter(id == ro$start)
     
@@ -214,8 +414,60 @@ chk<-rr %>%
   }) %>%
   unlist()
 
-which(!chk)
-rr[1,]
+
+which(!chk) # should be empty
+
+rr[111,]
+rr %>%
+  filter(start == "50076" | end == "50076" | start == "50079" | end == "50079")
+
+rds %>%
+  filter(start == "50076" | end == "50076" | start == "50079" | end == "50079")
+
+apts %>%
+  filter(id %in% c("50076","50079"))
+
+apts %>%
+  filter(id =="50079")
+
+# 
+# 
+# rr[127,]
+# rr %>%
+#   filter(start == "50078" | end == "50078" | start == "762" | end == "762")
+# allpts %>% 
+#   filter(id %in% c("50078","762")) %>%
+#   st_touches(rr[127,])
+
+rr[92,] #4649p-46497 and 46495-4649p
+rr %>%
+  filter(start == "4649" | end == "4649")
 
 
+rr[95,] #793-877p and 877p-46498
+#rr[158,]
+#rr[159,] 
+rr %>%
+  filter(start == "877" | end == "877")
 
+
+rr[147,] #877-793p and 793p-7918
+#rr[148,]
+rr %>%
+  filter(start == "793" | end == "793") 
+
+
+rr[200,] #route 910-931 typo on "910", 816792.7 => 816792.6? and 910-931p
+#rr[203,]
+#rr[204,]
+rr %>%
+  filter(start == "931" | end == "931" | start == "910" | end == "910" |
+           start == "50109" | end == "50109") # %>% mapview()
+
+
+rr[111,] #route 50078-50079 typo on "50079", 836349 => 836349.2?
+rr %>%
+  filter(start == "50079" | end == "50079") 
+
+
+24312.18 + 8860.33 + 9183.40 + 8483.40 - 35852.18
