@@ -26,9 +26,9 @@ getTDRoadsInSF<-function(specURL="http://static.data.gov.hk/td/traffic-speed-map
   roadMetaData %>%
     by_row(..f = function(r){
       st_linestring(as.matrix(rbind(as.numeric(r[3:4]),r[6:7])))
-    }, .to = "geom") %>%
+    }, .to = "geometry") %>%
     mutate(start = as.character(start), end = as.character(end)) %>%
-    select(route,start,end,district,route_type, geom) %>%
+    select(route,start,end,district,route_type, geometry) %>%
     st_sf() %>%
     st_set_crs(2326)
 }
@@ -62,7 +62,7 @@ getAllpts<-function(rds){
       rbind(r[1],r[2])
     }) %>%
     as.vector() %>%
-    data.frame(id=. ,stringsAsFactors = F, geom = rds$geom %>%
+    data.frame(id=. ,stringsAsFactors = F, geometry = rds$geometry %>%
                  st_cast('POINT'))  %>% 
     st_as_sf()
 }
@@ -88,27 +88,226 @@ all(st_equals(roots,sparse =F)  == diag(1,nrow=nrow(roots),ncol=nrow(roots),name
 #### routes with roots are assumed to be correct (i.e. correct geomtry) ####
 rds<-rds %>% 
   mutate(is_pivot = F, route_change = F, checked = F) %>%
-  select(route:route_type,is_pivot, route_change, checked, geom) %>%
+  select(route:route_type,is_pivot, route_change, checked, geometry) %>%
   mutate(is_pivot = ifelse((start %in% roots$id | end %in% roots$id), T, F))
 
 #### check all filtered start-end routes are correct
+require(mapview)
 rds %>%
   filter(is_pivot) %>%
-  mapview(legend=F)  + vrds %>%
+  mapview(legend=F) + getAllpts(rds %>% filter(is_pivot)) %>%
   mapview(legend=F)
 
+#### found 46332-46522, 992287-991098, 992116-991039 
+#### not matching the direction shown on the map
+sr=c("46332-46522", "992287-991098", "992116-991039")
+rds %>%
+  filter(route %in% sr) %>%
+  mapview(legend=F) + getAllpts(rds %>%
+                                  filter(route %in% sr))%>%
+  mapview(legend=F)
 
-
-rrds<-rds %>%
-  filter(is_pivot) %>%
+#### reverse the endpts of the geometry
+rds<-rds %>%
+  filter(route %in% sr) %>%
   group_by(route) %>%
   group_split() %>%
   lapply(function(r){
-    if(r$route != paste(r$start,r$end,sep='-')){
+    m<-r$geometry %>%
+      st_cast('POINT') %>%
+      st_coordinates() 
+    r %>% 
+      st_drop_geometry() %>%
+      st_set_geometry(st_linestring(m[c(2:1),]) %>% 
+                        st_geometry()) %>%
+      st_set_crs(2326)
+  }) %>%
+  do.call(rbind,.) %>%
+  rbind(.,rds %>% filter(!route %in% sr))
+
+#### let's check the map again
+rds %>%
+  filter(route %in% sr) %>%
+  mapview(legend=F) + getAllpts(rds %>% filter(route %in% sr)) %>%
+  mapview(legend=F)
+
+#### let's check if there are any typos in coordinates.
+#### The assumption here is typo in coordinates will make the distance of
+#### points with the same id to be small (< 1m, say) other than 0.
+apts<-getAllpts(rds)
+
+(tpts<-apts %>%
+  group_by(id) %>%
+  group_split() %>%
+  lapply(function(r){
+    m<-as.matrix(st_distance(r))
+    mm<-as.vector(m[1,])
+    if(any(mm[which(mm > 0)] < 1)){
       r
     }
+  }) %>%
+  do.call(rbind,.)) 
+#### 50079 and 910 seem got typos in coordinates
+
+tpts<-tpts %>%
+  group_by(id) %>%
+  group_split() %>%
+  lapply(function(r){
+    r[1,]
+  }) %>% do.call(rbind,.)
+
+#### just pick the first one
+
+#### correct them
+rrds<-rds %>%
+  filter(start %in% tpts$id | end %in% tpts$id)
+
+rds<-rrds %>%
+  group_by(route) %>%
+  group_split() %>%
+  lapply(function(r){
+    tmp<-r %>% getAllpts()
+    r %>%
+      st_drop_geometry() %>%
+      st_set_geometry(lapply(1:nrow(tmp),function(i){
+        if (tmp$id[i] %in% tpts$id){
+          tpts[which(tmp$id[i] == tpts$id),]$geometry %>%
+            st_sf()
+        }else{
+          tmp[i,]$geometry %>%
+            st_sf()
+        }
+      }) %>% 
+        do.call(rbind,.) %>%
+        st_geometry() %>%
+        st_coordinates() %>%
+        st_linestring() %>%
+        st_geometry() %>%
+        st_set_crs(2326))
+  }) %>%
+  do.call(rbind,.) %>%
+  rbind(., rds %>%
+          filter(!(start %in% tpts$id | end %in% tpts$id)))
+
+#### let's check if the coordinates are corrected
+rds %>% filter(start %in% tpts$id | end  %in% tpts$id)
+
+
+#### found some routes with name A-B but the start is B instead of A
+
+checkRouteStartEnd<-function(rds){
+  rds %>%
+    group_by(route) %>%
+    group_split() %>%
+    lapply(function(r){
+      r$route == paste(r$start,r$end,sep='-')
+    }) %>%
+    unlist %>%
+    all
+}
+checkRouteStartEnd(rds) ## all are correct
+
+
+#### check those (not pivot) touch (or share a common point) with
+#### those (pivot)
+
+rrds<-rds %>%
+  filter(!is_pivot) %>%
+  st_touches(rds %>% filter(is_pivot), sparse = F) %>%
+  which(.,arr.ind=T) %>%
+  apply(1,function(r){
+    tmp<-rds %>%
+      filter(!is_pivot)
+    tmp[r[1],]
   }) %>% 
-  do.call(rbind,.) 
+  do.call(rbind,.)
+
+
+#### find out those points that are incorrectly 
+#### assigned geometry
+
+#### w should be all TRUE
+w<-rds %>%
+  getAllpts() %>%
+  group_by(id) %>%
+  group_split() %>%
+  lapply(function(r){
+    st_equals(r,sparse=F) %>%
+      as.vector() %>% all %>%
+      setNames(r$id[1])
+  }) %>% unlist
+  
+#### filter out those ids with multiple point geometries
+pid<-names(w[!w])
+
+#### fix them by comparing them with the pivots
+tmprds<-rds %>% 
+  getAllpts() %>%
+  filter(id %in% pid)
+
+rrds %>%
+  st_touches( tmprds, sparse = F) %>%
+  which(.,arr.ind=T)
+
+rrds[3,]
+
+tmprds[c(2,172),] %>%
+  list(.,tmprds[c(173,174),]) %>% 
+  mapview(legend=list(F,F))
+
+tmprds[c(173,174),] %>%
+  list(.,rds %>% filter(district == "TM")) %>% 
+  mapview(layer.name = list("pt","route")) 
+
+
+
+
+rrds %>%
+  list(.,rds %>% filter(is_pivot) %>% getAllpts(),
+       rrds %>% getAllpts(), rds %>% filter(is_pivot)) %>%
+  mapview(.,zcol=list(NULL,"id","id", NULL),
+          layer.name=c("route","pivot","endpts", "pivot_route"),
+          legend=list(F,F,F,F),
+          homebutton=list(T,T,T))
+
+rrds %>% mapview() + 
+  (rds %>% filter(is_pivot) %>% getAllpts()) %>% 
+  mapview(burst = TRUE,hide=T)
+
+w<-getAllpts(rds) %>%
+  filter(id %in% getAllpts(rrds)$id)
+
+w[!(getAllpts(rds) %>%
+  filter(id %in% getAllpts(rrds)$id) %>%
+  group_by(id) %>%
+  group_split() %>%
+  lapply(function(r){
+    r %>% 
+      st_equals(sparse = F) %>%
+      as.vector %>%
+      all
+  }) %>%
+  unlist) ,]
+    
+  
+
+rds %>%
+  filter(is_pivot) %>%
+  getAllpts() %>%
+  group_by(id) %>%
+  group_split() %>%
+  lapply(function(i){
+    w<-getAllpts(rrds) %>%
+      filter(id == i$id) %>%
+      st_equals(.,i,sparse=F)
+    if (is.null(w)){
+      
+    } else{
+      print(Filter(Negate(is.null),w))  
+    }
+  }) %>% unlist
+
+
 
 
 
@@ -166,6 +365,7 @@ rds[5,]$route == paste(rds[5,]$start,rds[5,]$end,sep='-')
 rds %>%
   filter(is_pivot) %>%
   dim()
+
 
 
 
