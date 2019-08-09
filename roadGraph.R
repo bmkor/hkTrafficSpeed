@@ -95,17 +95,21 @@ rds<-rds %>%
 require(mapview)
 rds %>%
   filter(is_pivot) %>%
-  mapview(legend=F) + getAllpts(rds %>% filter(is_pivot)) %>%
-  mapview(legend=F)
+  group_by(district) %>%
+  group_split() %>%
+  c(., list(getAllpts(rds %>% filter(is_pivot)))) %>%
+  mapview(layer.name=list("HK","K","ST","TM","endpt"),
+          legend=list(F,F,F,F,F))
 
 #### found 46332-46522, 992287-991098, 992116-991039 
 #### not matching the direction shown on the map
 sr=c("46332-46522", "992287-991098", "992116-991039")
 rds %>%
   filter(route %in% sr) %>%
-  mapview(legend=F) + getAllpts(rds %>%
-                                  filter(route %in% sr))%>%
-  mapview(legend=F)
+  list(., getAllpts(rds %>%
+                      filter(route %in% sr))) %>%
+  mapview(legend=F,
+          layer.name=c("route","endpts"))
 
 #### reverse the endpts of the geometry
 rds<-rds %>%
@@ -244,6 +248,8 @@ pid<-names(w[!w])
 tmprds<-rds %>% 
   getAllpts() %>%
   filter(id %in% pid)
+
+(1.186*240000 + 1.713*130000)/18000/4
 
 rrds %>%
   st_touches( tmprds, sparse = F) %>%
